@@ -1,0 +1,824 @@
+<!DOCTYPE html>
+<html lang="es-AR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<meta name="theme-color" content="#000000">
+<title>Dónde bajo</title>
+<style>
+  :root { --bg:#000; --fg:#fff; --accent:#ffd400; --dim:#b8b8b8; --line:#666; --ok:#00c853; --bad:#ff5252; }
+  * { box-sizing: border-box; }
+  html, body { margin:0; height:100%; background:var(--bg); color:var(--fg);
+               font-family: Arial, Helvetica, sans-serif; overscroll-behavior:none; }
+
+  /* Superficie de gestos: ocupa toda la pantalla */
+  #surface { position:fixed; inset:0; display:flex; flex-direction:column; justify-content:space-between;
+             align-items:center; text-align:center; gap:12px;
+             padding:max(24px, env(safe-area-inset-top)) 20px max(24px, env(safe-area-inset-bottom));
+             touch-action:none; user-select:none; -webkit-user-select:none; -webkit-touch-callout:none;
+             -webkit-tap-highlight-color:transparent; outline:none; cursor:pointer; }
+  #title { font-size:clamp(20px,5.5vw,34px); color:var(--dim); margin:0; line-height:1.25; }
+  #center { flex:1; width:100%; display:flex; flex-direction:column; align-items:center;
+            justify-content:center; gap:16px; }
+  #main { font-size:clamp(34px,11vw,72px); font-weight:bold; color:var(--accent); line-height:1.15;
+          margin:0; overflow-wrap:anywhere; }
+  #sub { font-size:clamp(22px,6vw,38px); margin:0; }
+  #hint { font-size:clamp(15px,4vw,22px); color:var(--dim); line-height:1.45; margin:0; max-width:34em; }
+
+  /* Modo acompañante (para una persona que ve) */
+  #helper { position:fixed; inset:0; z-index:10; overflow:auto; background:#111; padding:16px;
+            font-size:18px; line-height:1.45; }
+  #helper[hidden] { display:none; }
+  #helper h1 { font-size:26px; color:var(--accent); margin:0 0 8px; }
+  #helper h2 { font-size:21px; margin:0 0 8px; }
+  #helper section { background:#1d1d1d; border-radius:12px; padding:14px; margin:14px 0; }
+  #helper p { margin:6px 0; }
+  #helper label { display:block; font-weight:bold; margin:8px 0 4px; }
+  #helper input[type=text], #helper select { width:100%; padding:12px; font-size:18px; border-radius:8px;
+            border:2px solid #888; background:#000; color:#fff; }
+  #helper button { width:100%; padding:14px; margin-top:10px; font-size:19px; font-weight:bold; border:none;
+            border-radius:10px; background:var(--accent); color:#000; cursor:pointer; }
+  #helper button.secondary { background:#444; color:#fff; }
+  #helper button.danger { background:var(--bad); color:#fff; }
+  #helper input:focus, #helper select:focus, #helper button:focus { outline:4px solid #fff; outline-offset:2px; }
+  .hrow { border-top:1px solid var(--line); padding-top:10px; margin-top:12px; }
+  .hrow:first-child { border-top:none; margin-top:0; padding-top:0; }
+  .meta { font-size:15px; color:var(--dim); }
+  #hStatus { background:#003a1a; border-radius:10px; padding:12px; margin-top:14px; min-height:3em; }
+</style>
+</head>
+<body>
+
+<main id="surface" tabindex="0" aria-label="Dónde bajo. Pantalla de control por gestos">
+  <p id="title"></p>
+  <div id="center">
+    <p id="main"></p>
+    <p id="sub"></p>
+  </div>
+  <p id="hint"></p>
+</main>
+
+<div id="helper" hidden role="dialog" aria-labelledby="hTitle">
+  <h1 id="hTitle">Modo acompañante</h1>
+  <p>Esta pantalla es para una persona que ve. Sirve para dar permisos, corregir nombres de paradas y ajustar opciones. Se cierra sola después de un minuto sin usarla.</p>
+  <button id="hClose">Volver al modo de voz</button>
+
+  <section aria-labelledby="h2a">
+    <h2 id="h2a">1. Permisos (hacerlo una sola vez)</h2>
+    <p>El navegador pide permiso para la ubicación y el micrófono con ventanas que una persona ciega no puede aceptar sola. Tocá el botón y aceptá cada ventana. Después la aplicación los recuerda.</p>
+    <button id="hPerm">Dar permisos de ubicación y micrófono</button>
+  </section>
+
+  <section aria-labelledby="h2b">
+    <h2 id="h2b">2. Guardar una parada con el teclado</h2>
+    <p>Pararse en la esquina y escribir un nombre. Se guarda la ubicación actual del GPS.</p>
+    <label for="hName">Nombre de la parada</label>
+    <input type="text" id="hName" autocomplete="off">
+    <button id="hSaveHere">Guardar donde estoy ahora</button>
+  </section>
+
+  <section aria-labelledby="h2c">
+    <h2 id="h2c">3. Paradas guardadas</h2>
+    <div id="hStops"></div>
+  </section>
+
+  <section aria-labelledby="h2d">
+    <h2 id="h2d">4. Ajustes</h2>
+    <label for="hThreshold">Avisar con alarma cuando falten</label>
+    <select id="hThreshold"></select>
+    <label for="hRate">Velocidad de la voz</label>
+    <select id="hRate"></select>
+  </section>
+
+  <div id="hStatus" role="status" aria-live="polite"></div>
+</div>
+
+<script>
+(() => {
+  'use strict';
+
+  const $ = id => document.getElementById(id);
+  const ui = {
+    surface:$('surface'), title:$('title'), main:$('main'), sub:$('sub'), hint:$('hint'),
+    helper:$('helper'), hClose:$('hClose'), hPerm:$('hPerm'), hName:$('hName'), hSaveHere:$('hSaveHere'),
+    hStops:$('hStops'), hThreshold:$('hThreshold'), hRate:$('hRate'), hStatus:$('hStatus')
+  };
+
+  // ======================= Constantes =======================
+  const THRESHOLDS = [100, 150, 200, 300, 400, 500, 800];
+  const RATES = [ {v:0.85, n:'lenta'}, {v:1, n:'normal'}, {v:1.2, n:'rápida'}, {v:1.5, n:'muy rápida'} ];
+  const ARRIVE_M = 40;          // "llegaste"
+  const PASSED_MARGIN = 100;    // metros que se aleja desde el punto más cercano => "te pasaste"
+  const GPS_LOST_MS = 30000;    // sin posición nueva => aviso
+  const ALARM_EVERY_MS = 10000; // repetición de la alarma
+  const SWIPE_PX = 50, TAP_PX = 25, DOUBLE_MS = 350, LONG_MS = 700;
+  const HELPER_IDLE_MS = 75000;
+
+  // ======================= Almacenamiento =======================
+  const store = {
+    get(k, d) { try { const v = localStorage.getItem(k); return v == null ? d : JSON.parse(v); } catch (e) { return d; } },
+    set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) {} }
+  };
+  let stops = (() => {
+    const a = store.get('stops', []);
+    return Array.isArray(a) ? a.filter(s => s && typeof s.lat === 'number' && typeof s.lon === 'number' &&
+                                            typeof s.name === 'string' && s.name.trim()) : [];
+  })();
+  let settings = Object.assign({ threshold: 200, rate: 1 }, store.get('settings', {}));
+  const saveStops = () => store.set('stops', stops);
+  const saveSettings = () => store.set('settings', settings);
+
+  // ======================= Utilidades =======================
+  const norm = s => (s || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().trim();
+  const plural = (n, a, b) => (n === 1 ? a : b);
+  const sleep = ms => new Promise(r => setTimeout(r, ms));
+  const dot = s => (/[.?!:]$/.test(s) ? s : s + '.');
+  function cleanName(t) {
+    t = String(t || '').replace(/\s+/g, ' ').trim().slice(0, 60);
+    return t ? t.charAt(0).toUpperCase() + t.slice(1) : '';
+  }
+  function haversine(lat1, lon1, lat2, lon2) {
+    const R = 6371000, rad = Math.PI / 180;
+    const dLat = (lat2 - lat1) * rad, dLon = (lon2 - lon1) * rad;
+    const a = Math.sin(dLat / 2) ** 2 + Math.cos(lat1 * rad) * Math.cos(lat2 * rad) * Math.sin(dLon / 2) ** 2;
+    return 2 * R * Math.asin(Math.sqrt(a));
+  }
+  function distanceText(m) {
+    if (m >= 1000) return `${(m / 1000).toFixed(1).replace('.', ',')} kilómetros`;
+    if (m >= 100) return `${Math.round(m / 10) * 10} metros`;
+    return `${Math.round(m / 5) * 5} metros`;
+  }
+  const accNote = pos => (pos && pos.coords.accuracy > 60
+    ? ` Atención: la precisión del GPS es baja, unos ${Math.round(pos.coords.accuracy)} metros.` : '');
+  const sortedStops = () => stops.slice().sort((a, b) =>
+    (b.lastUsed || 0) - (a.lastUsed || 0) || a.name.localeCompare(b.name, 'es'));
+  const stopsCountText = () => stops.length
+    ? `Tenés ${stops.length} ${plural(stops.length, 'parada guardada', 'paradas guardadas')}.`
+    : 'Todavía no tenés paradas guardadas.';
+
+  // ======================= Sonido y vibración =======================
+  let audioCtx = null;
+  function ensureAudio() {
+    try {
+      if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      if (audioCtx.state === 'suspended') audioCtx.resume();
+    } catch (e) {}
+  }
+  function tone(freq, ms = 80, vol = 0.25, delay = 0) {
+    if (!audioCtx) return;
+    try {
+      const o = audioCtx.createOscillator(), g = audioCtx.createGain();
+      o.frequency.value = freq; o.connect(g); g.connect(audioCtx.destination);
+      const t0 = audioCtx.currentTime + delay / 1000;
+      g.gain.setValueAtTime(0.0001, t0);
+      g.gain.exponentialRampToValueAtTime(vol, t0 + 0.01);
+      g.gain.exponentialRampToValueAtTime(0.0001, t0 + ms / 1000);
+      o.start(t0); o.stop(t0 + ms / 1000 + 0.03);
+    } catch (e) {}
+  }
+  const buzz = p => { try { if (navigator.vibrate) navigator.vibrate(p); } catch (e) {} };
+  const sfx = {
+    nav:  () => { tone(700, 50, 0.2); buzz(15); },
+    ok:   () => { tone(880, 70); tone(1175, 90, 0.25, 90); buzz(30); },
+    back: () => { tone(400, 100); buzz(20); },
+    err:  () => { tone(220, 220, 0.3); buzz([40, 40, 40]); },
+    tick: () => tone(1000, 30, 0.1),
+    listen: () => { tone(1200, 120, 0.3); },
+    alarm: () => { tone(988, 200, 0.5); tone(988, 200, 0.5, 300); tone(988, 200, 0.5, 600); }
+  };
+
+  // ======================= Voz =======================
+  let voice = null;
+  const langOf = v => (v.lang || '').replace('_', '-');
+  function pickVoice() {
+    if (!('speechSynthesis' in window)) return;
+    const vs = speechSynthesis.getVoices();
+    voice = vs.find(v => langOf(v) === 'es-AR') || vs.find(v => /^es-/i.test(langOf(v))) ||
+            vs.find(v => langOf(v).toLowerCase().startsWith('es')) || null;
+  }
+  if ('speechSynthesis' in window) { pickVoice(); speechSynthesis.onvoiceschanged = pickVoice; }
+
+  function speak(text, opts) {
+    const interrupt = !opts || opts.interrupt !== false;
+    return new Promise(resolve => {
+      if (!('speechSynthesis' in window)) { setTimeout(resolve, Math.min(4000, 300 + text.length * 60)); return; }
+      if (interrupt) speechSynthesis.cancel();
+      const u = new SpeechSynthesisUtterance(text);
+      u.lang = voice ? voice.lang : 'es-AR';
+      if (voice) u.voice = voice;
+      u.rate = settings.rate;
+      let done = false, t = null;
+      const fin = () => { if (!done) { done = true; clearTimeout(t); resolve(); } };
+      u.onend = fin; u.onerror = fin;
+      t = setTimeout(fin, 2500 + (text.length * 110) / settings.rate);
+      speechSynthesis.speak(u);
+    });
+  }
+  function speakAll(text) {
+    text.split(/(?<=[.?!])\s+/).filter(Boolean).forEach((p, i) => speak(p, { interrupt: i === 0 }));
+  }
+
+  // ======================= Pantalla encendida =======================
+  let wakeLock = null;
+  async function requestWakeLock() {
+    try { if ('wakeLock' in navigator) wakeLock = await navigator.wakeLock.request('screen'); } catch (e) {}
+  }
+  function releaseWakeLock() { if (wakeLock) { wakeLock.release().catch(() => {}); wakeLock = null; } }
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible' && trip.active) requestWakeLock();
+  });
+
+  // ======================= Estado =======================
+  let mode = 'idle';           // idle | menu | trip | busy
+  let menu = null;             // menú actual
+  let flow = null;             // operación en curso cancelable
+  let busyStatus = '';
+  let helperOpen = false, helperTimer = null;
+  const trip = { active:false, stop:null, watchId:null, pos:null, fixAt:0, firstFix:true, minD:Infinity,
+                 inZone:false, silenced:false, arrived:false, passed:false, alarmTimer:null,
+                 watchdog:null, gpsLost:false, lostAt:0 };
+
+  const optLabel = o => (typeof o.label === 'function' ? o.label() : o.label);
+  function currentDistance() {
+    return trip.active && trip.pos && trip.stop
+      ? haversine(trip.pos.coords.latitude, trip.pos.coords.longitude, trip.stop.lat, trip.stop.lon) : null;
+  }
+
+  // ======================= Pantalla (apoyo visual) =======================
+  function render() {
+    let t = '', m = '', s = '', h = '';
+    if (mode === 'idle') {
+      t = 'Dónde bajo'; m = 'Tocá la pantalla para comenzar';
+      h = 'La aplicación habla. No necesitás ver la pantalla.';
+    } else if (mode === 'menu' && menu) {
+      const n = menu.options.length;
+      t = menu.title; m = optLabel(menu.options[menu.index]); s = `${menu.index + 1} de ${n}`;
+      h = 'Derecha: siguiente · Izquierda: anterior · Doble toque: elegir · Abajo: volver · Arriba: leer todas · Mantené apretado: ayuda';
+    } else if (mode === 'trip') {
+      const d = currentDistance();
+      t = `Viaje a ${trip.stop.name}`;
+      m = d == null ? 'Buscando señal de GPS…' : distanceText(d);
+      s = trip.inZone ? 'Cerca de la parada' : `Aviso a ${settings.threshold} metros`;
+      h = 'Un toque: distancia · Dos toques: silenciar alarma · Abajo: terminar viaje · Mantené apretado: ayuda';
+    } else {
+      t = 'Un momento'; m = busyStatus; h = 'Deslizá hacia abajo para cancelar';
+    }
+    ui.title.textContent = t; ui.main.textContent = m; ui.sub.textContent = s; ui.hint.textContent = h;
+  }
+
+  // ======================= Menús =======================
+  function showMenu(def) {
+    menu = Object.assign({ index: 0 }, def);
+    mode = 'menu'; flow = null;
+    render();
+    const n = menu.options.length;
+    const parts = [def.pre, dot(def.title), def.intro, `${dot(optLabel(menu.options[0]))} 1 de ${n}.`];
+    return speak(parts.filter(Boolean).join(' '));
+  }
+  function speakOption() {
+    const n = menu.options.length;
+    return speak(`${dot(optLabel(menu.options[menu.index]))} ${menu.index + 1} de ${n}.`);
+  }
+  function menuMove(dir) {
+    const n = menu.options.length;
+    menu.index = (menu.index + dir + n) % n;
+    sfx.nav(); render(); speakOption();
+  }
+
+  const HELP_GESTURES =
+    'Ayuda. Deslizá el dedo hacia la derecha para pasar a la opción siguiente, y hacia la izquierda para volver a la anterior. ' +
+    'Tocá dos veces seguidas para elegir. Tocá una vez para repetir la opción actual. ' +
+    'Deslizá hacia abajo para volver atrás o cancelar. Deslizá hacia arriba para escuchar todas las opciones. ' +
+    'Mantené el dedo apretado para escuchar esta ayuda.';
+  const helpTrip = () =>
+    `Durante el viaje: tocá una vez para saber a qué distancia estás. Tocá dos veces para silenciar la alarma. ` +
+    `Deslizá hacia abajo para terminar el viaje. La alarma suena cuando faltan ${settings.threshold} metros.`;
+
+  function menuGesture(g) {
+    const opt = menu.options[menu.index];
+    switch (g) {
+      case 'swipeRight': menuMove(+1); break;
+      case 'swipeLeft':  menuMove(-1); break;
+      case 'tap':        speakOption(); break;
+      case 'double': {
+        sfx.ok();
+        const r = opt.run();
+        if (r && typeof r.catch === 'function') r.catch(fail);
+        if (r === 'stay') { render(); speakOption(); }
+        break;
+      }
+      case 'swipeDown':
+        sfx.back();
+        if (menu.onBack) { const r = menu.onBack(); if (r && r.catch) r.catch(fail); }
+        else speak('Ya estás en el menú principal.');
+        break;
+      case 'swipeUp':
+        speak('Opciones: ' + menu.options.map((o, i) => `${i + 1}, ${dot(optLabel(o))}`).join(' '));
+        break;
+      case 'long': speakAll(HELP_GESTURES); break;
+    }
+  }
+
+  function mainMenu(opts) {
+    opts = opts || {};
+    return showMenu({
+      title: 'Menú principal', pre: opts.pre, intro: opts.note ? opts.note + ' ' + stopsCountText() : stopsCountText(),
+      options: [
+        { label: 'Ir a una parada guardada', run: () => stopsMenu('go') },
+        { label: 'Guardar mi ubicación actual como parada', run: () => saveFlow() },
+        { label: 'Borrar una parada', run: () => stopsMenu('delete') },
+        { label: 'Ajustes', run: () => settingsMenu() },
+        { label: 'Ayuda', run: () => { speakAll(HELP_GESTURES); return 'none'; } },
+        { label: 'Modo acompañante, para una persona que ve', run: () => openHelper() }
+      ]
+    });
+  }
+
+  function stopsMenu(purpose) {
+    if (!stops.length) return mainMenu({ pre: 'No hay paradas guardadas. Elegí la opción Guardar mi ubicación actual.' });
+    const opts = sortedStops().map(s => ({
+      label: s.name, run: () => (purpose === 'go' ? startTrip(s) : confirmDelete(s))
+    }));
+    opts.push({ label: 'Volver al menú principal', run: () => mainMenu() });
+    return showMenu({
+      title: purpose === 'go' ? 'Elegí la parada de destino' : 'Elegí la parada que querés borrar',
+      options: opts, onBack: () => mainMenu()
+    });
+  }
+
+  function confirmDelete(s) {
+    return showMenu({
+      title: `¿Borrar la parada ${s.name}?`,
+      options: [
+        { label: 'No, conservarla', run: () => mainMenu() },
+        { label: 'Sí, borrarla', run: () => {
+            stops = stops.filter(o => o !== s); saveStops();
+            return mainMenu({ pre: `Parada ${s.name} borrada.` });
+        } }
+      ],
+      onBack: () => mainMenu()
+    });
+  }
+
+  function cycle(list, cur) { const i = list.indexOf(cur); return list[(i + 1) % list.length]; }
+  function settingsMenu() {
+    return showMenu({
+      title: 'Ajustes',
+      options: [
+        { label: () => `Distancia de aviso: ${settings.threshold} metros. Doble toque para cambiar`,
+          run: () => { settings.threshold = cycle(THRESHOLDS, settings.threshold); saveSettings(); return 'stay'; } },
+        { label: () => `Velocidad de la voz: ${(RATES.find(r => r.v === settings.rate) || RATES[1]).n}. Doble toque para cambiar`,
+          run: () => { settings.rate = cycle(RATES.map(r => r.v), settings.rate); saveSettings(); return 'stay'; } },
+        { label: 'Volver al menú principal', run: () => mainMenu() }
+      ],
+      onBack: () => mainMenu()
+    });
+  }
+
+  // ======================= Operaciones cancelables =======================
+  function beginFlow(status) {
+    const f = { cancelled: false, cleanup: [] };
+    flow = f; mode = 'busy'; busyStatus = status; render();
+    return f;
+  }
+  function cancelFlow() {
+    if (!flow) return;
+    const f = flow; f.cancelled = true; flow = null;
+    f.cleanup.forEach(fn => { try { fn(); } catch (e) {} });
+  }
+  function busyGesture(g) {
+    if (g === 'swipeDown') { cancelFlow(); sfx.back(); mainMenu({ pre: 'Cancelado.' }); }
+    else if (g === 'tap') speak(busyStatus);
+    else if (g === 'long') speak('Esperá un momento. Para cancelar, deslizá hacia abajo.');
+  }
+  function fail(err) {
+    console.error(err);
+    cancelFlow();
+    mainMenu({ pre: 'Ocurrió un error.' });
+  }
+  function safe(fn) { try { const r = fn(); if (r && typeof r.catch === 'function') r.catch(fail); } catch (e) { fail(e); } }
+
+  // ======================= GPS =======================
+  function geoErrText(e) {
+    if (e && e.code === 1) return 'No tengo permiso para usar la ubicación. Pedile a un acompañante que abra el modo acompañante y toque Dar permisos.';
+    if (e && e.code === 0) return 'Este navegador no permite usar la ubicación.';
+    return 'No pude obtener la ubicación. Probá en un lugar abierto.';
+  }
+  // Espera la mejor posición posible. Resuelve con la mejor encontrada, o null si se cancela o no hay.
+  function getBestFix(f, maxMs, goodAcc) {
+    goodAcc = goodAcc || 15;
+    return new Promise((resolve, reject) => {
+      if (!('geolocation' in navigator)) { reject({ code: 0 }); return; }
+      let best = null, id = null, tick = null, to = null, finished = false;
+      const finish = (val, err) => {
+        if (finished) return; finished = true;
+        clearTimeout(to); clearInterval(tick);
+        if (id !== null) navigator.geolocation.clearWatch(id);
+        if (err) reject(err); else resolve(val);
+      };
+      f.cleanup.push(() => finish(null));
+      id = navigator.geolocation.watchPosition(
+        p => { if (!best || p.coords.accuracy < best.coords.accuracy) best = p; if (p.coords.accuracy <= goodAcc) finish(best); },
+        e => { if (e.code === 1) finish(null, e); },
+        { enableHighAccuracy: true, maximumAge: 0, timeout: 20000 });
+      tick = setInterval(sfx.tick, 2000);
+      to = setTimeout(() => finish(best), maxMs);
+    });
+  }
+
+  // ======================= Guardar ubicación =======================
+  function upsertStop(name, fix) {
+    const i = stops.findIndex(s => norm(s.name) === norm(name));
+    const s = { name, lat: fix.coords.latitude, lon: fix.coords.longitude,
+                acc: Math.round(fix.coords.accuracy), lastUsed: i >= 0 ? (stops[i].lastUsed || 0) : 0 };
+    if (i >= 0) stops[i] = s; else stops.push(s);
+    saveStops();
+    return i >= 0 ? 'actualizada' : 'guardada';
+  }
+  function autoName() {
+    let n = stops.length + 1;
+    while (stops.some(s => norm(s.name) === norm(`Parada ${n}`))) n++;
+    return `Parada ${n}`;
+  }
+  function commitStop(name, fix) {
+    const what = upsertStop(name, fix);
+    sfx.ok();
+    return mainMenu({ pre: `Parada ${name} ${what}.` });
+  }
+
+  async function saveFlow() {
+    const f = beginFlow('Buscando señal de GPS…');
+    await speak('Guardar ubicación. Quedate quieto en el lugar. Buscando señal de GPS.');
+    if (f.cancelled) return;
+    let fix;
+    try { fix = await getBestFix(f, 25000); }
+    catch (e) { if (f.cancelled) return; flow = null; sfx.err(); return mainMenu({ pre: geoErrText(e) }); }
+    if (f.cancelled) return;
+    if (!fix) { flow = null; sfx.err(); return mainMenu({ pre: 'No pude obtener tu ubicación. Probá en un lugar abierto.' }); }
+    const acc = Math.round(fix.coords.accuracy);
+    if (acc > 50) {
+      flow = null;
+      return showMenu({
+        title: `La precisión del GPS es baja, unos ${acc} metros`,
+        options: [
+          { label: 'Intentar de nuevo', run: () => saveFlow() },
+          { label: 'Usar esta ubicación de todas formas', run: () => nameFlow(fix) },
+          { label: 'Cancelar', run: () => mainMenu() }
+        ],
+        onBack: () => mainMenu()
+      });
+    }
+    sfx.ok();
+    await speak(`Ubicación obtenida. Precisión ${acc} metros.`);
+    if (f.cancelled) return;
+    return nameFlow(fix);
+  }
+
+  function listenOnce(f, SR) {
+    return new Promise(resolve => {
+      let rec = null, done = false, to = null;
+      const fin = v => { if (done) return; done = true; clearTimeout(to); try { rec.abort(); } catch (e) {} resolve(v); };
+      to = setTimeout(() => fin({ error: 'no-speech' }), 12000);
+      f.cleanup.push(() => fin({ error: 'cancelled' }));
+      try {
+        rec = new SR();
+        rec.lang = 'es-AR'; rec.interimResults = false; rec.maxAlternatives = 1; rec.continuous = false;
+        rec.onresult = e => {
+          const t = e.results && e.results[0] && e.results[0][0] && e.results[0][0].transcript;
+          fin(t ? { text: t } : { error: 'no-speech' });
+        };
+        rec.onerror = e => fin({ error: (e && e.error) || 'error' });
+        rec.onend = () => fin({ error: 'no-speech' });
+        rec.start();
+      } catch (e) { fin({ error: 'error' }); }
+    });
+  }
+  function nameErrorText(code) {
+    switch (code) {
+      case 'not-allowed': case 'service-not-allowed':
+        return 'El micrófono no está permitido. Pedile a un acompañante que abra el modo acompañante y toque Dar permisos.';
+      case 'network': return 'No hay conexión a internet para reconocer la voz.';
+      case 'audio-capture': return 'No encontré el micrófono.';
+      case 'no-speech': return 'No te escuché.';
+      case 'unsupported': return 'Este navegador no puede reconocer la voz.';
+      default: return 'No pude entender el nombre.';
+    }
+  }
+  async function nameFlow(fix) {
+    const f = beginFlow('Escuchando el nombre…');
+    const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (!SR) return nameResult(fix, null, 'unsupported');
+    await speak('Decí el nombre de la parada después del tono.');
+    if (f.cancelled) return;
+    sfx.listen();
+    await sleep(300);
+    if (f.cancelled) return;
+    const r = await listenOnce(f, SR);
+    if (f.cancelled) return;
+    flow = null;
+    nameResult(fix, r.text ? cleanName(r.text) : null, r.error);
+  }
+  function nameResult(fix, name, error) {
+    flow = null;
+    if (name) {
+      return showMenu({
+        title: `Dijiste: ${name}`,
+        options: [
+          { label: 'Guardar', run: () => commitStop(name, fix) },
+          { label: 'Decir el nombre otra vez', run: () => nameFlow(fix) },
+          { label: 'Cancelar', run: () => mainMenu() }
+        ],
+        onBack: () => mainMenu()
+      });
+    }
+    const auto = autoName();
+    return showMenu({
+      title: nameErrorText(error),
+      options: [
+        { label: 'Intentar decir el nombre otra vez', run: () => nameFlow(fix) },
+        { label: `Guardar con el nombre ${auto}`, run: () => commitStop(auto, fix) },
+        { label: 'Cancelar', run: () => mainMenu() }
+      ],
+      onBack: () => mainMenu()
+    });
+  }
+
+  // ======================= Viaje =======================
+  function startTrip(stop) {
+    cancelFlow();
+    if (!('geolocation' in navigator)) { sfx.err(); return mainMenu({ pre: geoErrText({ code: 0 }) }); }
+    stop.lastUsed = Date.now(); saveStops();
+    Object.assign(trip, { active: true, stop, pos: null, fixAt: Date.now(), firstFix: true, minD: Infinity,
+                          inZone: false, silenced: false, arrived: false, passed: false,
+                          gpsLost: false, lostAt: 0 });
+    mode = 'trip'; menu = null; render();
+    speak(`Viaje a ${stop.name}. Te aviso cuando falten ${settings.threshold} metros. ` +
+          `Un toque: distancia. Dos toques: silenciar la alarma. Mantené la pantalla encendida.`);
+    trip.watchId = navigator.geolocation.watchPosition(onPosition, onTripGeoError,
+      { enableHighAccuracy: true, maximumAge: 1000, timeout: 20000 });
+    trip.watchdog = setInterval(watchdog, 5000);
+    requestWakeLock();
+  }
+  function stopAlarm() { clearInterval(trip.alarmTimer); trip.alarmTimer = null; try { navigator.vibrate && navigator.vibrate(0); } catch (e) {} }
+  function endTrip(pre) {
+    if (trip.watchId !== null) navigator.geolocation.clearWatch(trip.watchId);
+    trip.watchId = null; trip.active = false;
+    stopAlarm(); clearInterval(trip.watchdog); trip.watchdog = null;
+    releaseWakeLock();
+    return mainMenu({ pre });
+  }
+  function resumeTrip() {
+    mode = 'trip'; menu = null; render();
+    speak('Seguimos con el viaje. Tocá una vez para saber la distancia.');
+  }
+  function tripMenu() {
+    return showMenu({
+      title: 'Viaje en curso',
+      options: [
+        { label: 'Seguir con el viaje', run: () => resumeTrip() },
+        { label: 'Terminar el viaje', run: () => endTrip('Viaje terminado.') }
+      ],
+      onBack: () => resumeTrip()
+    });
+  }
+  function onTripGeoError(e) {
+    if (e && e.code === 1 && trip.active) { sfx.err(); endTrip('Perdí el permiso de ubicación. Viaje terminado.'); }
+  }
+  function onPosition(pos) {
+    if (!trip.active) return;
+    trip.pos = pos; trip.fixAt = Date.now();
+    const first = trip.firstFix; trip.firstFix = false;
+    const d = currentDistance();
+    if (trip.gpsLost) { trip.gpsLost = false; speak('Señal de GPS recuperada.', { interrupt: false }); }
+    if (mode === 'trip') render();
+    if (first) speak(`Ubicación obtenida. Estás a ${distanceText(d)} de ${trip.stop.name}.${accNote(pos)}`, { interrupt: false });
+    if (pos.coords.accuracy > 150) return;   // fix demasiado impreciso para decidir avisos
+    evaluate(d);
+  }
+  function evaluate(d) {
+    trip.minD = Math.min(trip.minD, d);
+    let ring = false;   // una sola alarma aunque se crucen la zona de aviso y la de llegada a la vez
+    if (!trip.inZone && d <= settings.threshold) { trip.inZone = true; trip.silenced = false; ring = true; }
+    if (!trip.arrived && d <= ARRIVE_M) { trip.arrived = true; trip.silenced = false; ring = true; }
+    if (ring) startAlarm();
+    if (trip.inZone && !trip.passed && d > trip.minD + PASSED_MARGIN) {
+      trip.passed = true; stopAlarm(); sfx.err(); buzz([300, 100, 300]);
+      speak(`Atención: parece que te pasaste de la parada. Estás a ${distanceText(d)} de ${trip.stop.name}.`);
+    }
+  }
+  function startAlarm() {
+    clearInterval(trip.alarmTimer);
+    trip.alarmTimer = setInterval(alarmTick, ALARM_EVERY_MS);
+    alarmTick();
+  }
+  function alarmTick() {
+    if (!trip.active || trip.silenced || trip.passed) { stopAlarm(); return; }
+    const d = currentDistance();
+    if (d === null) return;
+    sfx.alarm();
+    if (d <= ARRIVE_M) { buzz([800, 200, 800, 200, 800]); speak('Llegaste a la parada. Bajá ahora.'); }
+    else { buzz([500, 200, 500, 200, 500]); speak(`Atención. Faltan ${distanceText(d)} para ${trip.stop.name}. Prepará para bajar.`); }
+  }
+  function watchdog() {
+    if (!trip.active) return;
+    const now = Date.now();
+    if (now - trip.fixAt > GPS_LOST_MS) {
+      if (!trip.gpsLost) {
+        trip.gpsLost = true; trip.lostAt = now; sfx.err();
+        speak('Atención: perdí la señal del GPS. Mientras no vuelva, no puedo avisarte.');
+      } else if (now - trip.lostAt > 60000) {
+        trip.lostAt = now; speak('Sigo sin señal de GPS.');
+      }
+    }
+  }
+  function tellDistance() {
+    buzz(60);
+    const d = currentDistance();
+    if (d === null) { speak('Todavía no tengo señal de GPS. Esperá unos segundos.'); return; }
+    const age = Math.round((Date.now() - trip.fixAt) / 1000);
+    const old = age > 15 ? ` Atención: esta ubicación tiene ${age} segundos de antigüedad.` : '';
+    speak(`Estás a ${distanceText(d)} de ${trip.stop.name}.${accNote(trip.pos)}${old}`);
+  }
+  function tripGesture(g) {
+    switch (g) {
+      case 'tap': tellDistance(); break;
+      case 'double':
+        if (trip.alarmTimer) {
+          stopAlarm(); trip.silenced = true; sfx.back();
+          if (trip.arrived) endTrip('Alarma silenciada. Viaje terminado.');
+          else speak('Alarma silenciada. Tocá una vez para saber la distancia.');
+        } else speak('La alarma no está sonando.');
+        break;
+      case 'swipeDown': sfx.back(); tripMenu(); break;
+      case 'long': speak(helpTrip()); break;
+    }
+  }
+
+  // ======================= Gestos =======================
+  function onGesture(g) {
+    if (mode === 'idle') { startApp(); return; }
+    if (mode === 'menu') menuGesture(g);
+    else if (mode === 'trip') tripGesture(g);
+    else busyGesture(g);
+  }
+  function dispatch(g) { if (helperOpen) return; ensureAudio(); safe(() => onGesture(g)); }
+
+  function startApp() {
+    ensureAudio(); pickVoice();
+    const seen = store.get('seenIntro', false);
+    store.set('seenIntro', true);
+    mainMenu({ pre: 'Dónde bajo.', note: seen
+      ? 'Mantené el dedo apretado para escuchar la ayuda.'
+      : 'Deslizá a la derecha para pasar a la opción siguiente y tocá dos veces para elegir. Mantené el dedo apretado para escuchar la ayuda.' });
+  }
+
+  const G = { down: false, cancelled: false, long: false, id: null, x0: 0, y0: 0, t0: 0, lp: null,
+              pend: null, lastT: 0, lastX: 0, lastY: 0 };
+  ui.surface.addEventListener('contextmenu', e => e.preventDefault());
+  ui.surface.addEventListener('pointerdown', e => {
+    e.preventDefault();
+    if (G.down) { G.cancelled = true; clearTimeout(G.lp); return; }   // segundo dedo: se ignora el gesto
+    G.down = true; G.cancelled = false; G.long = false; G.id = e.pointerId;
+    G.x0 = e.clientX; G.y0 = e.clientY; G.t0 = Date.now();
+    try { ui.surface.setPointerCapture(e.pointerId); } catch (_) {}
+    clearTimeout(G.lp);
+    G.lp = setTimeout(() => { if (G.down && !G.cancelled) { G.long = true; dispatch('long'); } }, LONG_MS);
+  });
+  ui.surface.addEventListener('pointermove', e => {
+    if (!G.down || e.pointerId !== G.id) return;
+    if (Math.hypot(e.clientX - G.x0, e.clientY - G.y0) > TAP_PX) clearTimeout(G.lp);
+  });
+  ui.surface.addEventListener('pointercancel', e => { if (e.pointerId === G.id) { G.down = false; clearTimeout(G.lp); } });
+  ui.surface.addEventListener('pointerup', e => {
+    if (!G.down || e.pointerId !== G.id) return;
+    G.down = false; clearTimeout(G.lp);
+    if (G.cancelled || G.long) return;
+    const dx = e.clientX - G.x0, dy = e.clientY - G.y0, dist = Math.hypot(dx, dy), now = Date.now();
+    if (dist >= SWIPE_PX) {
+      dispatch(Math.abs(dx) > Math.abs(dy) ? (dx > 0 ? 'swipeRight' : 'swipeLeft') : (dy > 0 ? 'swipeDown' : 'swipeUp'));
+    } else if (dist < TAP_PX && now - G.t0 < 500) {
+      if (G.pend && now - G.lastT < DOUBLE_MS && Math.hypot(e.clientX - G.lastX, e.clientY - G.lastY) < 80) {
+        clearTimeout(G.pend); G.pend = null; dispatch('double');
+      } else {
+        G.lastT = now; G.lastX = e.clientX; G.lastY = e.clientY;
+        G.pend = setTimeout(() => { G.pend = null; dispatch('tap'); }, DOUBLE_MS);
+      }
+    }
+  });
+  // Teclado (pruebas en computadora o teclado externo)
+  document.addEventListener('keydown', e => {
+    if (helperOpen) return;
+    const map = { ArrowRight:'swipeRight', ArrowLeft:'swipeLeft', ArrowDown:'swipeDown', ArrowUp:'swipeUp',
+                  Escape:'swipeDown', Enter:'double', ' ':'tap', h:'long', H:'long', '?':'long' };
+    const g = map[e.key];
+    if (g) { e.preventDefault(); dispatch(g); }
+  });
+
+  // ======================= Modo acompañante =======================
+  const hStatus = t => { ui.hStatus.textContent = t; };
+  function resetHelperTimer() {
+    clearTimeout(helperTimer);
+    helperTimer = setTimeout(() => closeHelper(true), HELPER_IDLE_MS);
+  }
+  function openHelper() {
+    helperOpen = true; ui.helper.hidden = false; ui.helper.scrollTop = 0;
+    renderHelper(); hStatus(''); resetHelperTimer();
+    speak('Modo acompañante. Esta pantalla es para una persona que ve. Se cierra sola después de un minuto sin usarla.');
+    return 'none';
+  }
+  function closeHelper(auto) {
+    if (!helperOpen) return;
+    helperOpen = false; ui.helper.hidden = true; clearTimeout(helperTimer);
+    ensureAudio();
+    if (mode === 'menu' && menu) speak(`${auto ? 'Volviendo al modo de voz. ' : ''}${dot(menu.title)} ${dot(optLabel(menu.options[menu.index]))}`);
+    else if (mode === 'trip') speak('Viaje en curso. Tocá una vez para saber la distancia.');
+    else if (mode === 'idle') render();
+  }
+  function renderHelper() {
+    ui.hThreshold.textContent = '';
+    THRESHOLDS.forEach(v => { const o = document.createElement('option'); o.value = String(v); o.textContent = `${v} metros`; ui.hThreshold.appendChild(o); });
+    ui.hThreshold.value = String(settings.threshold);
+    ui.hRate.textContent = '';
+    RATES.forEach(r => { const o = document.createElement('option'); o.value = String(r.v); o.textContent = r.n; ui.hRate.appendChild(o); });
+    ui.hRate.value = String(settings.rate);
+    renderHelperStops();
+  }
+  function renderHelperStops() {
+    const box = ui.hStops; box.textContent = '';
+    if (!stops.length) { const p = document.createElement('p'); p.textContent = 'Todavía no hay paradas guardadas.'; box.appendChild(p); return; }
+    sortedStops().forEach(s => {
+      const row = document.createElement('div'); row.className = 'hrow';
+      const lab = document.createElement('label'); lab.textContent = 'Nombre de la parada';
+      const inp = document.createElement('input'); inp.type = 'text'; inp.value = s.name; inp.autocomplete = 'off';
+      lab.appendChild(inp);
+      const meta = document.createElement('p'); meta.className = 'meta';
+      meta.textContent = `Ubicación ${s.lat.toFixed(5)}, ${s.lon.toFixed(5)}` + (s.acc ? ` (precisión ${s.acc} m)` : '');
+      const ren = document.createElement('button'); ren.type = 'button'; ren.className = 'secondary'; ren.textContent = 'Guardar el nombre';
+      ren.addEventListener('click', () => {
+        const nn = cleanName(inp.value);
+        if (!nn) { hStatus('El nombre no puede estar vacío.'); return; }
+        if (stops.some(o => o !== s && norm(o.name) === norm(nn))) { hStatus('Ya existe otra parada con ese nombre.'); return; }
+        s.name = nn; saveStops(); hStatus(`Nombre guardado: ${nn}.`); renderHelperStops();
+      });
+      const del = document.createElement('button'); del.type = 'button'; del.className = 'danger'; del.textContent = 'Borrar esta parada';
+      del.addEventListener('click', () => {
+        if (window.confirm(`¿Borrar la parada ${s.name}?`)) {
+          stops = stops.filter(o => o !== s); saveStops(); hStatus('Parada borrada.'); renderHelperStops();
+        }
+      });
+      row.appendChild(lab); row.appendChild(meta); row.appendChild(ren); row.appendChild(del);
+      box.appendChild(row);
+    });
+  }
+  ui.hClose.addEventListener('click', () => closeHelper(false));
+  ui.helper.addEventListener('pointerdown', resetHelperTimer, true);
+  ui.helper.addEventListener('keydown', resetHelperTimer, true);
+  ui.helper.addEventListener('input', resetHelperTimer, true);
+  ui.hThreshold.addEventListener('change', () => { settings.threshold = parseInt(ui.hThreshold.value, 10); saveSettings(); hStatus(`Aviso a ${settings.threshold} metros.`); });
+  ui.hRate.addEventListener('change', () => { settings.rate = parseFloat(ui.hRate.value); saveSettings(); hStatus('Velocidad cambiada.'); speak('Así suena la voz con esta velocidad.'); });
+
+  ui.hPerm.addEventListener('click', async () => {
+    ensureAudio(); pickVoice();
+    hStatus('Pidiendo permisos… aceptá cada ventana que aparezca.');
+    const res = [];
+    try {
+      await new Promise((ok, ko) => navigator.geolocation.getCurrentPosition(ok, ko, { enableHighAccuracy: true, timeout: 25000 }));
+      res.push('Ubicación: permitida.');
+    } catch (e) { res.push(e && e.code === 1 ? 'Ubicación: NO permitida.' : 'Ubicación: permitida, pero no hay señal de GPS ahora (probá afuera).'); }
+    try {
+      const st = await navigator.mediaDevices.getUserMedia({ audio: true });
+      st.getTracks().forEach(t => t.stop());
+      res.push('Micrófono: permitido.');
+    } catch (e) { res.push('Micrófono: NO permitido. No se podrán dictar nombres; se pueden escribir en este modo.'); }
+    if (navigator.vibrate) { navigator.vibrate(200); res.push('Vibración: probada (si no vibró, este dispositivo o navegador no la permite).'); }
+    else res.push('Vibración: no disponible en este navegador.');
+    res.push(('speechSynthesis' in window) ? 'Voz: probando ahora.' : 'Voz: NO disponible en este navegador.');
+    hStatus(res.join(' '));
+    speak('Prueba de voz. Si escuchás esto, la voz funciona.');
+  });
+
+  ui.hSaveHere.addEventListener('click', async () => {
+    const name = cleanName(ui.hName.value);
+    if (!name) { hStatus('Escribí primero un nombre.'); ui.hName.focus(); return; }
+    ensureAudio();
+    hStatus('Buscando señal de GPS… quedate quieto, puede tardar hasta 25 segundos.');
+    const f = { cancelled: false, cleanup: [] };
+    try {
+      const fix = await getBestFix(f, 25000);
+      if (!fix) { hStatus('No pude obtener la ubicación. Probá en un lugar abierto.'); return; }
+      const what = upsertStop(name, fix);
+      ui.hName.value = '';
+      hStatus(`Parada ${name} ${what}. Precisión: ${Math.round(fix.coords.accuracy)} metros.` +
+              (fix.coords.accuracy > 50 ? ' La precisión es baja; conviene repetirlo al aire libre.' : ''));
+      renderHelperStops();
+    } catch (e) { hStatus(geoErrText(e)); }
+  });
+
+  // ======================= Inicio =======================
+  render();
+  if (location.hash === '#acompanante') { helperOpen = true; ui.helper.hidden = false; renderHelper(); resetHelperTimer(); }
+  window.addEventListener('hashchange', () => { if (location.hash === '#acompanante' && !helperOpen) openHelper(); });
+})();
+</script>
+</body>
+</html>
