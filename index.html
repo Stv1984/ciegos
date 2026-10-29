@@ -1,0 +1,179 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#12161c">
+<title>Mis radios</title>
+<style>
+:root{--bg:#12161c;--card:#1b222b;--line:#2a3441;--tx:#eef1f5;--mut:#8b97a7;--ac:#f2b33d;--err:#ff7a6b}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+html,body{margin:0;height:100%}
+body{background:var(--bg);color:var(--tx);font:16px/1.4 system-ui,sans-serif;display:flex;flex-direction:column;
+max-width:480px;margin:0 auto;
+padding:env(safe-area-inset-top) 0 env(safe-area-inset-bottom)}
+header{padding:20px 20px 8px;text-align:center}
+#freq{font-size:64px;font-weight:300;letter-spacing:-2px;color:var(--ac);line-height:1;font-variant-numeric:tabular-nums}
+#name{font-size:20px;margin-top:6px}
+#status{color:var(--mut);font-size:14px;min-height:20px;margin-top:2px}
+#status.err{color:var(--err)}
+.ctrl{display:flex;justify-content:center;align-items:center;gap:22px;padding:14px}
+button{font:inherit;color:var(--tx);background:var(--card);border:1px solid var(--line);border-radius:50%;
+width:56px;height:56px;font-size:22px;cursor:pointer}
+button:active{transform:scale(.95)}
+#play{width:84px;height:84px;font-size:34px;background:var(--ac);border-color:var(--ac);color:#12161c}
+#what{display:block;margin:0 auto;width:auto;height:44px;border-radius:22px;padding:0 22px;font-size:16px}
+#what:disabled{opacity:.6}
+#song{text-align:center;padding:10px 20px 0;min-height:34px;font-size:17px}
+#song.err{color:var(--err)}
+ul{list-style:none;margin:0;padding:8px 16px 80px;overflow:auto;flex:1}
+li{display:flex;align-items:center;gap:12px;background:var(--card);border:1px solid var(--line);
+border-radius:12px;padding:14px;margin-bottom:10px;cursor:pointer}
+li.on{border-color:var(--ac)}
+li b{font-size:22px;font-weight:400;color:var(--ac);min-width:62px;font-variant-numeric:tabular-nums}
+li span{flex:1}
+</style>
+</head>
+<body>
+<header>
+  <div id="freq">--.-</div>
+  <div id="name">Elegí una radio</div>
+  <div id="status"></div>
+</header>
+<div class="ctrl">
+  <button id="prev" aria-label="Anterior">⏮</button>
+  <button id="play" aria-label="Reproducir o pausar">▶</button>
+  <button id="next" aria-label="Siguiente">⏭</button>
+</div>
+<button id="what">¿Qué suena?</button>
+<div id="song"></div>
+<ul id="list"></ul>
+<audio id="au" preload="none"></audio>
+
+<script>
+const AUDD_TOKEN = 'b09f970f5122c2d8fd4041327e028465';
+
+const STATIONS = [
+  {id:'aspen', name:'FM Aspen', freq:'102.3', url:'https://playerservices.streamtheworld.com/api/livestream-redirect/ASPEN.mp3'},
+  {id:'dsports', name:'DSports Radio', freq:'103.1', url:'https://playerservices.streamtheworld.com/api/livestream-redirect/DSPORTSRADIOAAC.aac'},
+  {id:'contemporanea', name:'FM Contemporánea', freq:'98.9', url:'https://streaming3.locucionar.com/proxy/contemporanea989?mp=/stream'},
+  {id:'buenayre', name:'FM del Buen Ayre', freq:'105.3', url:'https://streaming.radiosenlinea.com.ar/8738/stream'},
+  {id:'rockpop', name:'FM Rock&Pop', freq:'95.9', url:'https://playerservices.streamtheworld.com/api/livestream-redirect/ROCKANDPOPAAC.aac'},
+  {id:'lared', name:'AM La Red', freq:'910', url:'https://playerservices.streamtheworld.com/api/livestream-redirect/LA_RED_AM910AAC.aac'}
+];
+
+const $ = id => document.getElementById(id);
+const au = $('au');
+let cur = -1, retries = 0;
+
+const store = {
+  get(k){ try{ return localStorage.getItem(k) }catch(e){ return null } },
+  set(k,v){ try{ localStorage.setItem(k,v) }catch(e){} }
+};
+const urlOf = s => s.url;
+
+function render(){
+  $('list').innerHTML = '';
+  STATIONS.forEach((s,i)=>{
+    const li = document.createElement('li');
+    if(i===cur) li.className='on';
+    li.innerHTML = '<b>'+s.freq+'</b><span>'+s.name+'</span>';
+    li.onclick = () => select(i, true);
+    $('list').appendChild(li);
+  });
+}
+
+function setStatus(t,err){ $('status').textContent=t; $('status').className = err?'err':''; }
+function setSong(t,err){ $('song').textContent=t; $('song').className = err?'err':''; }
+
+function select(i, play){
+  cur = i; retries = 0;
+  const s = STATIONS[i], u = urlOf(s);
+  $('freq').textContent = s.freq; $('name').textContent = s.name;
+  setSong('');
+  store.set('last', s.id);
+  au.pause(); au.removeAttribute('src');
+  if(!u){ setStatus('Esta radio no tiene dirección', true); $('play').textContent='▶'; }
+  else if(play){ start(u); }
+  else { setStatus(''); $('play').textContent='▶'; }
+  meta(s); render();
+}
+
+function start(u){
+  setStatus('Conectando…');
+  au.src = u;
+  au.play().catch(()=>{});
+}
+
+function toggle(){
+  if(cur<0) return select(0,true);
+  const s = STATIONS[cur];
+  if(!urlOf(s)) return select(cur,true);
+  if(au.paused){
+    // en vivo: reconectar para no escuchar lo viejo del buffer
+    start(urlOf(s));
+  } else au.pause();
+}
+function step(d){ select((cur+d+STATIONS.length)%STATIONS.length, true); }
+
+au.addEventListener('playing',()=>{ $('play').textContent='⏸'; setStatus('En vivo'); retries=0; });
+au.addEventListener('pause',()=>{ $('play').textContent='▶'; if($('status').textContent==='En vivo') setStatus('Pausado'); });
+au.addEventListener('waiting',()=> setStatus('Cargando…'));
+au.addEventListener('error',()=>{
+  if(cur<0) return;
+  if(retries<3){ retries++; setStatus('Reconectando ('+retries+'/3)…'); setTimeout(()=>start(urlOf(STATIONS[cur])),1500*retries); }
+  else { $('play').textContent='▶'; setStatus('No se pudo reproducir. Probá otra radio.', true); }
+});
+
+function meta(s){
+  if(!('mediaSession' in navigator)) return;
+  navigator.mediaSession.metadata = new MediaMetadata({title:s.name, artist:'FM '+s.freq, album:'Mis radios'});
+  navigator.mediaSession.setActionHandler('play', toggle);
+  navigator.mediaSession.setActionHandler('pause', toggle);
+  navigator.mediaSession.setActionHandler('previoustrack', ()=>step(-1));
+  navigator.mediaSession.setActionHandler('nexttrack', ()=>step(1));
+}
+
+// ¿Qué suena? Graba 10 s con el micrófono y consulta AudD.
+$('what').onclick = async () => {
+  $('what').disabled = true;
+  try{
+    const mic = await navigator.mediaDevices.getUserMedia({audio:{echoCancellation:false, noiseSuppression:false, autoGainControl:false}});
+    const rec = new MediaRecorder(mic), parts = [];
+    rec.ondataavailable = e => parts.push(e.data);
+    rec.onstop = async () => {
+      mic.getTracks().forEach(t => t.stop());
+      setSong('Buscando…');
+      try{
+        const f = new FormData();
+        f.append('api_token', AUDD_TOKEN);
+        f.append('file', new Blob(parts, {type:rec.mimeType}), 'clip.webm');
+        const r = await (await fetch('https://api.audd.io/', {method:'POST', body:f})).json();
+        if(r.result) setSong(r.result.artist + ' — ' + r.result.title);
+        else if(r.status === 'error') setSong(r.error.error_message, true);
+        else setSong('No se reconoció la canción. Probá de nuevo.', true);
+      }catch(e){ setSong('No se pudo consultar el servicio', true); }
+      $('what').disabled = false;
+    };
+    rec.start();
+    let n = 10;
+    setSong('Escuchando… ' + n);
+    const t = setInterval(() => { setSong('Escuchando… ' + (--n)); if(n <= 0){ clearInterval(t); rec.stop(); } }, 1000);
+  }catch(e){
+    setSong(!navigator.mediaDevices
+      ? 'El navegador no permite el micrófono en archivos locales (hace falta https)'
+      : 'Micrófono no disponible (' + e.name + ')', true);
+    $('what').disabled = false;
+  }
+};
+
+$('play').onclick = toggle;
+$('prev').onclick = ()=>step(-1);
+$('next').onclick = ()=>step(1);
+
+render();
+const last = store.get('last'), li = STATIONS.findIndex(s=>s.id===last);
+if(li>=0) select(li,false);
+</script>
+</body>
+</html>
