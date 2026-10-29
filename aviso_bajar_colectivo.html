@@ -1,0 +1,96 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#102a43">
+<title>Aviso para bajar — prototipo accesible</title>
+<style>
+:root{color-scheme:dark;--bg:#071522;--panel:#102a43;--panel2:#183b56;--text:#fff;--muted:#d4e3ef;--accent:#ffdf5d;--focus:#7ee7ff;--danger:#ffb4ab;--good:#a7f3d0}
+*{box-sizing:border-box}html{font-size:18px}body{margin:0;background:var(--bg);color:var(--text);font-family:system-ui,-apple-system,"Segoe UI",sans-serif;line-height:1.5}main{max-width:760px;margin:auto;padding:1rem; padding-bottom:3rem}header{padding:1rem 0 .5rem}h1{font-size:1.8rem;line-height:1.15;margin:.2rem 0 .5rem}h2{font-size:1.25rem;margin:0 0 .7rem}p{margin:.35rem 0 .8rem}.intro{color:var(--muted)}.panel{background:var(--panel);border:2px solid #36566f;border-radius:1rem;padding:1rem;margin:1rem 0}label,.label{display:block;font-weight:700;margin:.8rem 0 .35rem}input,select,button{font:inherit;width:100%;border-radius:.7rem;border:2px solid #7895a9;padding:.8rem;background:#fff;color:#102030}input:focus,select:focus,button:focus-visible,a:focus-visible{outline:4px solid var(--focus);outline-offset:3px}button{font-weight:800;cursor:pointer;background:var(--accent);color:#15202a;border-color:var(--accent);margin:.35rem 0}button.secondary{background:var(--panel2);color:white;border-color:#9ab5c7}button.stop{background:#ffd4cf;border-color:#ffd4cf;color:#541b18}button:disabled{opacity:.55;cursor:not-allowed}.actions{display:grid;grid-template-columns:1fr;gap:.3rem}.status{border-radius:.75rem;background:#071522;border:2px solid #54738a;padding:1rem;margin:.7rem 0;min-height:5rem}.status strong{display:block;font-size:1.1rem}.big{font-size:2rem;font-weight:900;letter-spacing:.01em}.muted{color:var(--muted);font-size:.9rem}.notice{border-left:5px solid var(--accent);padding:.7rem;background:#1b3448;border-radius:.4rem}.error{color:var(--danger)}.success{color:var(--good)}ul{padding-left:1.3rem}a{color:#a8e6ff;overflow-wrap:anywhere}.hidden{display:none!important}.result-list{padding:0;list-style:none}.result-list li{margin:.5rem 0}.result-list button{text-align:left;background:var(--panel2);color:white;border-color:#7895a9}.small{font-size:.85rem}.footer{border-top:1px solid #36566f;padding-top:1rem;color:var(--muted)}@media(min-width:600px){main{padding:1.5rem}.actions.two{grid-template-columns:1fr 1fr}}
+</style>
+</head>
+<body>
+<main>
+<header>
+<h1>Aviso para bajar del colectivo</h1>
+<p class="intro">Prototipo accesible para acompañar el viaje con avisos por voz y vibración. Pensado para probar en San Miguel y José C. Paz.</p>
+</header>
+<div class="notice"><strong>Importante:</strong> este prototipo no conoce la posición del colectivo ni confirma que una parada sea segura. Usa el GPS del teléfono y estima la distancia en línea recta hasta el destino elegido. No reemplaza el bastón, el perro guía ni la atención al entorno.</div>
+<section class="panel" aria-labelledby="destino-title">
+<h2 id="destino-title">1. Elegí dónde bajar</h2>
+<label for="destino">Dirección, esquina o lugar de destino</label>
+<input id="destino" type="search" autocomplete="street-address" placeholder="Ej.: Maestro Ferreyra y Miguel Cané, San Miguel" />
+<button id="buscar">Buscar destino</button>
+<p class="muted">La búsqueda utiliza OpenStreetMap. Elegí el resultado más preciso; una dirección encontrada no garantiza que sea una parada de colectivo.</p>
+<div id="busquedaEstado" class="muted" role="status" aria-live="polite"></div>
+<ul id="resultados" class="result-list" aria-label="Resultados de búsqueda"></ul>
+<div id="destinoElegido" class="status" aria-live="polite"><strong>Destino aún no seleccionado</strong><span>Buscá una dirección y elegí un resultado.</span></div>
+<label for="umbral">Primer aviso de aproximación</label>
+<select id="umbral">
+<option value="800">A 800 metros</option><option value="500" selected>A 500 metros</option><option value="300">A 300 metros</option><option value="150">A 150 metros</option>
+</select>
+</section>
+<section class="panel" aria-labelledby="seguimiento-title">
+<h2 id="seguimiento-title">2. Iniciá el seguimiento</h2>
+<p>Para probarlo, permití el acceso a la ubicación. Usá una conexión segura HTTPS y mantené esta página abierta durante el viaje.</p>
+<div class="actions two">
+<button id="iniciar" disabled>Iniciar seguimiento</button>
+<button id="probarVoz" class="secondary">Probar voz</button>
+</div>
+<div class="status" id="estadoGps" role="status" aria-live="polite"><strong>Seguimiento detenido</strong><span>Primero seleccioná un destino.</span></div>
+<div class="status" aria-live="polite">
+<span class="muted">Distancia estimada al destino</span>
+<div class="big" id="distancia">—</div>
+<div id="precision" class="muted">Esperando ubicación GPS.</div>
+</div>
+<div class="actions two">
+<button id="repetir" class="secondary" disabled>Repetir información</button>
+<button id="detener" class="stop" disabled>Detener seguimiento</button>
+</div>
+</section>
+<section class="panel" aria-labelledby="como-title">
+<h2 id="como-title">Cómo usarlo</h2>
+<ul>
+<li>Antes de subir, buscá la dirección o esquina donde querés bajar.</li>
+<li>Seleccioná el resultado correcto y activá el seguimiento.</li>
+<li>La aplicación anuncia la distancia aproximada y avisa al acercarse al umbral elegido.</li>
+<li>Cuando llegue al umbral, vuelve a avisar a 200 metros y a 100 metros, si el GPS registra esas distancias.</li>
+<li>Detené el seguimiento al terminar el viaje.</li>
+</ul>
+</section>
+<section class="panel" aria-labelledby="limites-title">
+<h2 id="limites-title">Limitaciones de esta versión</h2>
+<ul>
+<li>La distancia es en línea recta; no sigue el recorrido real del colectivo ni calcula cuánto falta en tiempo.</li>
+<li>En un vehículo que pasa cerca del destino sin detenerse, puede avisar igualmente.</li>
+<li>El GPS puede desviarse decenas de metros. Los edificios, la cobertura y el ahorro de batería pueden afectar la precisión.</li>
+<li>El navegador puede suspender la página con el teléfono bloqueado; no se garantiza funcionamiento en segundo plano.</li>
+<li>La búsqueda depende de los datos cartográficos de OpenStreetMap y de la disponibilidad de su servicio público.</li>
+<li>No se ha validado como herramienta de navegación segura. Probalo primero en condiciones controladas y acompañado.</li>
+</ul>
+</section>
+<p class="footer small">Privacidad: la ubicación se utiliza en este dispositivo para calcular distancias y no se envía a un servidor propio. La dirección que escribas se envía al servicio de búsqueda de OpenStreetMap. Prototipo experimental; no es un sistema oficial de transporte.</p>
+</main>
+<script>
+(()=>{
+const $=id=>document.getElementById(id);
+let destination=null,watchId=null,lastPosition=null,lastAnnounced=null,lastDistance=null,lastSpokenAt=0,hasAlerted={800:false,500:false,300:false,200:false,150:false,100:false};
+const say=(text)=>{if(!('speechSynthesis'in window)){setStatus('La lectura por voz no está disponible en este navegador.','Probá con Chrome y revisá las opciones de accesibilidad.');return;}window.speechSynthesis.cancel();const u=new SpeechSynthesisUtterance(text);u.lang='es-AR';u.rate=.92;window.speechSynthesis.speak(u);};
+function setStatus(title,detail,kind=''){const el=$('estadoGps');el.innerHTML='';const strong=document.createElement('strong');strong.textContent=title;const span=document.createElement('span');span.textContent=detail; if(kind)span.className=kind;el.append(strong,span);}
+function setDestination(lat,lon,name){destination={lat:Number(lat),lon:Number(lon),name};$('destinoElegido').innerHTML='';const s=document.createElement('strong');s.textContent='Destino seleccionado';const p=document.createElement('span');p.textContent=name;$('destinoElegido').append(s,p);$('iniciar').disabled=false; $('busquedaEstado').textContent='Destino listo. Podés iniciar el seguimiento.';say('Destino seleccionado: '+name+'.');}
+function distanceMeters(a,b){const rad=x=>x*Math.PI/180;const R=6371000;const dLat=rad(b.lat-a.lat),dLon=rad(b.lon-a.lon);const x=Math.sin(dLat/2)**2+Math.cos(rad(a.lat))*Math.cos(rad(b.lat))*Math.sin(dLon/2)**2;return 2*R*Math.asin(Math.sqrt(x));}
+function fmt(m){if(!Number.isFinite(m))return '—';if(m<1000)return Math.round(m)+' metros';return (m/1000).toFixed(1).replace('.',',')+' kilómetros';}
+async function search(){const q=$('destino').value.trim();if(q.length<4){$('busquedaEstado').textContent='Escribí una dirección o esquina más completa.';return;} $('buscar').disabled=true;$('resultados').replaceChildren();$('busquedaEstado').textContent='Buscando dirección…';try{const url='https://nominatim.openstreetmap.org/search?format=jsonv2&limit=5&countrycodes=ar&q='+encodeURIComponent(q);const r=await fetch(url,{headers:{'Accept-Language':'es'} });if(!r.ok)throw new Error('El servicio respondió '+r.status);const data=await r.json();if(!data.length){$('busquedaEstado').textContent='No se encontraron resultados. Probá con calle, esquina y localidad.';return;} $('busquedaEstado').textContent='Elegí el resultado correcto:';data.forEach(item=>{const li=document.createElement('li');const b=document.createElement('button');b.type='button';b.textContent=item.display_name;b.addEventListener('click',()=>{setDestination(item.lat,item.lon,item.display_name);$('resultados').replaceChildren();});li.appendChild(b);$('resultados').appendChild(li);});}catch(e){$('busquedaEstado').textContent='No se pudo buscar el destino. Revisá la conexión e intentá más tarde. ('+e.message+')';}finally{$('buscar').disabled=false;}}
+function handlePosition(pos){lastPosition={lat:pos.coords.latitude,lon:pos.coords.longitude};const acc=pos.coords.accuracy;const d=distanceMeters(lastPosition,destination);lastDistance=d;$('distancia').textContent=fmt(d);$('precision').textContent='Precisión GPS estimada: ±'+Math.round(acc)+' m. La distancia no sigue el recorrido vial.';setStatus('Seguimiento activo','Ubicación actualizada. Última lectura: '+new Date().toLocaleTimeString('es-AR',{hour:'2-digit',minute:'2-digit'}));
+const first=Number($('umbral').value);const thresholds=[first,200,100].filter((v,i,a)=>a.indexOf(v)===i).sort((a,b)=>b-a);for(const t of thresholds){if(d<=t&&!hasAlerted[t]){hasAlerted[t]=true;const msg=t===first?'Estás a aproximadamente '+t+' metros del destino. Preparáte para bajar y verificá tu parada.':'Atención: estás a aproximadamente '+t+' metros del destino. Verificá el entorno y confirmá la parada.';say(msg);if(navigator.vibrate)navigator.vibrate([250,100,250]);lastAnnounced=msg;break;}}
+if(d<60&&!hasAlerted[60]){hasAlerted[60]=true;const msg='Estás muy cerca del destino seleccionado. Confirmá con referencias del entorno antes de bajar.';say(msg);if(navigator.vibrate)navigator.vibrate([350,150,350]);lastAnnounced=msg;}
+if(acc>100){$('precision').textContent+=' La precisión es baja; tomá la distancia con cautela.';}
+}
+function start(){if(!destination){say('Primero seleccioná un destino.');return;}if(!navigator.geolocation){setStatus('GPS no disponible','Este navegador no permite acceder a la ubicación.');say('La ubicación no está disponible en este navegador.');return;}if(watchId!==null)return;hasAlerted={800:false,500:false,300:false,200:false,150:false,100:false,60:false};setStatus('Solicitando ubicación','Aceptá el permiso de ubicación si el navegador lo pregunta.');say('Iniciando seguimiento. Permití el acceso a tu ubicación.');watchId=navigator.geolocation.watchPosition(handlePosition,e=>{let msg='No se pudo obtener la ubicación.';if(e.code===1)msg='Permiso de ubicación denegado.';if(e.code===2)msg='La ubicación no está disponible.';if(e.code===3)msg='La ubicación tardó demasiado en responder.';setStatus('Problema con el GPS',msg,'error');say(msg+' Revisá los permisos y la configuración del teléfono.');if(e.code===1||e.code===2){stop(false);}}, {enableHighAccuracy:true,maximumAge:3000,timeout:20000});$('iniciar').disabled=true;$('detener').disabled=false;$('repetir').disabled=false;}
+function stop(announce=true){if(watchId!==null){navigator.geolocation.clearWatch(watchId);watchId=null;} $('iniciar').disabled=!destination;$('detener').disabled=true;$('repetir').disabled=true;setStatus('Seguimiento detenido','No se está consultando la ubicación.');if(announce)say('Seguimiento detenido.');}
+$('buscar').addEventListener('click',search);$('destino').addEventListener('keydown',e=>{if(e.key==='Enter'){e.preventDefault();search();}});$('iniciar').addEventListener('click',start);$('detener').addEventListener('click',()=>stop());$('probarVoz').addEventListener('click',()=>say('La lectura por voz está funcionando. Para comenzar, buscá y seleccioná tu destino.'));$('repetir').addEventListener('click',()=>{if(!destination){say('No hay un destino seleccionado.');return;}const d=lastDistance===null?'Todavía no hay una ubicación GPS.':'La distancia estimada al destino es '+fmt(lastDistance)+'.';say('Destino: '+destination.name+'. '+d+' La distancia es aproximada.');});window.addEventListener('pagehide',()=>{if(watchId!==null)navigator.geolocation.clearWatch(watchId);});
+})();
+</script>
+</body>
+</html>
