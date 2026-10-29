@@ -1,0 +1,541 @@
+<!DOCTYPE html>
+<html lang="es-AR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Dónde bajo</title>
+<style>
+  :root { --bg:#000; --fg:#fff; --accent:#ffd400; --ok:#00c853; --danger:#ff3d3d; --card:#1a1a1a; }
+  * { box-sizing: border-box; }
+  body { margin:0; padding:16px; background:var(--bg); color:var(--fg);
+         font-family: Arial, Helvetica, sans-serif; font-size:20px; line-height:1.4; }
+  h1 { font-size:28px; margin:0 0 16px; color:var(--accent); }
+  h2 { font-size:22px; margin:0 0 8px; }
+  section { background:var(--card); border-radius:14px; padding:16px; margin-bottom:16px; }
+  label { display:block; font-weight:bold; margin:10px 0 6px; }
+  input[type=text], input[type=number] {
+    width:100%; padding:14px; font-size:20px; border-radius:10px; border:3px solid #888;
+    background:#000; color:#fff; }
+  input:focus, button:focus { outline:4px solid var(--accent); outline-offset:2px; }
+  button { width:100%; padding:18px; margin-top:12px; font-size:22px; font-weight:bold;
+           border:none; border-radius:12px; background:var(--accent); color:#000; cursor:pointer; }
+  button.big { padding:40px 18px; font-size:28px; background:var(--ok); color:#000; }
+  button.secondary { background:#444; color:#fff; }
+  button.danger { background:var(--danger); color:#fff; }
+  button:disabled { opacity:.4; cursor:not-allowed; }
+  .checkrow { display:flex; align-items:center; gap:12px; margin-top:12px; }
+  .checkrow input { width:28px; height:28px; }
+  .checkrow label { margin:0; }
+  #results button { background:#2b2b2b; color:#fff; text-align:left; font-size:18px; font-weight:normal; }
+  #results button[aria-pressed="true"] { border:4px solid var(--accent); }
+  #distance { font-size:40px; font-weight:bold; color:var(--accent); margin:8px 0; }
+  #status { min-height:2.8em; }
+  .hint { font-size:16px; color:#bbb; }
+</style>
+</head>
+<body>
+
+<h1>Dónde bajo</h1>
+
+<section aria-labelledby="h-dest">
+  <h2 id="h-dest">1. Destino</h2>
+  <label for="address">Dirección o esquina (ejemplo: Rivadavia y Medrano)</label>
+  <input type="text" id="address" autocomplete="off" placeholder="Calle y calle, o calle y número">
+  <label for="city">Localidad (opcional, ejemplo: José C. Paz, San Miguel, Muñiz)</label>
+  <input type="text" id="city" value="" autocomplete="off" placeholder="Dejalo vacío para buscar en toda la zona">
+  <button id="btnSearch">Buscar destino</button>
+  <div id="results" role="group" aria-label="Resultados de la búsqueda"></div>
+  <p class="hint">Para una esquina escribí las dos calles separadas por "y", por ejemplo: Sarmiento y Perón. Si hay varias localidades con ese cruce, usá el campo Localidad. También podés pegar coordenadas, por ejemplo: -34.6037, -58.4116</p>
+</section>
+
+<section aria-labelledby="h-track">
+  <h2 id="h-track">2. Viaje</h2>
+  <label for="threshold">Avisarme con alarma cuando falten (metros)</label>
+  <input type="number" id="threshold" value="200" min="50" max="2000" step="50" inputmode="numeric">
+  <div class="checkrow">
+    <input type="checkbox" id="autoAnnounce">
+    <label for="autoAnnounce">Decirme la distancia automáticamente cada 60 segundos</label>
+  </div>
+  <button id="btnStart" disabled>Iniciar seguimiento</button>
+  <button id="btnStop" class="secondary" disabled>Detener seguimiento</button>
+</section>
+
+<section aria-labelledby="h-now">
+  <h2 id="h-now">3. Distancia</h2>
+  <button id="btnDistance" class="big" disabled>¿A qué distancia estoy?</button>
+  <div id="distance" aria-hidden="true">--</div>
+  <button id="btnSilence" class="danger" disabled>Silenciar alarma</button>
+</section>
+
+<div id="status" role="status" aria-live="polite"></div>
+
+<script>
+(() => {
+  'use strict';
+
+  // ---------- Elementos ----------
+  const $ = id => document.getElementById(id);
+  const el = {
+    address: $('address'), city: $('city'), results: $('results'),
+    btnSearch: $('btnSearch'), btnStart: $('btnStart'), btnStop: $('btnStop'),
+    btnDistance: $('btnDistance'), btnSilence: $('btnSilence'),
+    threshold: $('threshold'), autoAnnounce: $('autoAnnounce'),
+    distance: $('distance'), status: $('status')
+  };
+
+  // ---------- Estado ----------
+  let dest = null;            // {lat, lon, name}
+  let watchId = null;
+  let lastPos = null;
+  let wakeLock = null;
+  let alarmTimer = null;
+  let alarmSilenced = false;
+  let inAlarmZone = false;
+  let arrivedAnnounced = false;
+  let autoTimer = null;
+  let audioCtx = null;
+
+  // ---------- Voz ----------
+  let voice = null;
+  function pickVoice() {
+    const voices = speechSynthesis.getVoices();
+    voice = voices.find(v => v.lang === 'es-AR') ||
+            voices.find(v => v.lang && v.lang.startsWith('es-')) ||
+            voices.find(v => v.lang && v.lang.startsWith('es')) || null;
+  }
+  if ('speechSynthesis' in window) {
+    pickVoice();
+    speechSynthesis.onvoiceschanged = pickVoice;
+  }
+  function speak(text, interrupt = true) {
+    setStatus(text);
+    if (!('speechSynthesis' in window)) return;
+    if (interrupt) speechSynthesis.cancel();
+    const u = new SpeechSynthesisUtterance(text);
+    u.lang = voice ? voice.lang : 'es-AR';
+    if (voice) u.voice = voice;
+    u.rate = 1;
+    speechSynthesis.speak(u);
+  }
+  function setStatus(t) { el.status.textContent = t; }
+
+  // ---------- Sonido y vibración ----------
+  function ensureAudio() {
+    try {
+      if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      if (audioCtx.state === 'suspended') audioCtx.resume();
+    } catch (e) { /* sin audio */ }
+  }
+  function beep(times = 3) {
+    if (!audioCtx) return;
+    for (let i = 0; i < times; i++) {
+      const o = audioCtx.createOscillator();
+      const g = audioCtx.createGain();
+      o.frequency.value = 880;
+      o.connect(g); g.connect(audioCtx.destination);
+      const t0 = audioCtx.currentTime + i * 0.35;
+      g.gain.setValueAtTime(0.0001, t0);
+      g.gain.exponentialRampToValueAtTime(0.6, t0 + 0.02);
+      g.gain.exponentialRampToValueAtTime(0.0001, t0 + 0.25);
+      o.start(t0); o.stop(t0 + 0.27);
+    }
+  }
+  function vibrate(pattern) {
+    if (navigator.vibrate) navigator.vibrate(pattern);
+  }
+
+  // ---------- Distancia ----------
+  function haversine(lat1, lon1, lat2, lon2) {
+    const R = 6371000, rad = Math.PI / 180;
+    const dLat = (lat2 - lat1) * rad, dLon = (lon2 - lon1) * rad;
+    const a = Math.sin(dLat / 2) ** 2 +
+              Math.cos(lat1 * rad) * Math.cos(lat2 * rad) * Math.sin(dLon / 2) ** 2;
+    return 2 * R * Math.asin(Math.sqrt(a));
+  }
+  function currentDistance() {
+    if (!dest || !lastPos) return null;
+    return haversine(lastPos.coords.latitude, lastPos.coords.longitude, dest.lat, dest.lon);
+  }
+  function distanceText(m) {
+    if (m >= 1000) {
+      const km = (m / 1000).toFixed(1).replace('.', ',');
+      return `${km} kilómetros`;
+    }
+    if (m >= 100) return `${Math.round(m / 10) * 10} metros`;
+    return `${Math.round(m / 5) * 5} metros`;
+  }
+  function accuracyNote() {
+    if (lastPos && lastPos.coords.accuracy > 60) {
+      return ` Atención: la precisión del GPS es baja, unos ${Math.round(lastPos.coords.accuracy)} metros.`;
+    }
+    return '';
+  }
+
+  // ---------- Búsqueda de dirección (Nominatim / OpenStreetMap) ----------
+  const COORD_RE = /^\s*(-?\d{1,2}(?:[.,]\d+)?)\s*[,;\s]\s*(-?\d{1,3}(?:[.,]\d+)?)\s*$/;
+
+  async function searchAddress() {
+    const raw = el.address.value.trim();
+    if (!raw) { speak('Escribí primero una dirección o esquina.'); el.address.focus(); return; }
+    ensureAudio();
+
+    // Coordenadas directas
+    const m = raw.match(COORD_RE);
+    if (m && raw.includes(',') ) {
+      const lat = parseFloat(m[1].replace(',', '.'));
+      const lon = parseFloat(m[2].replace(',', '.'));
+      if (!isNaN(lat) && !isNaN(lon)) {
+        setDestination({ lat, lon, name: `Coordenadas ${lat.toFixed(5)}, ${lon.toFixed(5)}` });
+        el.results.innerHTML = '';
+        return;
+      }
+    }
+
+    const city = el.city.value.trim();
+    const q = city ? `${raw}, ${city}` : raw;
+    // Zona de preferencia: San Miguel, José C. Paz, Malvinas Argentinas y alrededores
+    // (viewbox = oeste, norte, este, sur). Prioriza esa zona pero no excluye otras.
+    const url = 'https://nominatim.openstreetmap.org/search?format=jsonv2&limit=8' +
+                '&accept-language=es&countrycodes=ar' +
+                '&viewbox=-58.90,-34.45,-58.55,-34.70' +
+                '&q=' + encodeURIComponent(q);
+    speak('Buscando.');
+    el.btnSearch.disabled = true;
+    try {
+      const inter = parseIntersection(raw);
+      if (inter) {
+        try {
+          const found = await searchIntersection(inter[0], inter[1], city);
+          if (found.length) { renderResults(found); return; }
+          setStatus('No encontré ese cruce exacto. Pruebo con otra búsqueda.');
+        } catch (e) {
+          setStatus('La búsqueda de cruces no respondió. Pruebo con otra búsqueda.');
+        }
+      }
+      const res = await fetch(url, { headers: { 'Accept': 'application/json' } });
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      const data = await res.json();
+      renderResults(data);
+    } catch (e) {
+      speak('No pude buscar la dirección. Revisá tu conexión e intentá de nuevo.');
+    } finally {
+      el.btnSearch.disabled = false;
+    }
+  }
+
+  // ---------- Búsqueda de cruces (Overpass / OpenStreetMap) ----------
+  const BBOX = '-34.75,-58.95,-34.40,-58.50'; // sur,oeste,norte,este (Gran Buenos Aires noroeste)
+  const OVERPASS = [
+    'https://overpass-api.de/api/interpreter',
+    'https://overpass.kumi.systems/api/interpreter'
+  ];
+  const ABBR = { gral:'general', pres:'presidente', dr:'doctor', dra:'doctora', cnel:'coronel',
+                 tte:'teniente', brig:'brigadier', ing:'ingeniero', alte:'almirante', cap:'capitan' };
+  const GENERIC = new Set(['av','avda','avenida','calle','pje','pasaje','bv','bulevar','de','del','la','las','los','el']);
+  const TITLES = new Set(['general','presidente','doctor','doctora','coronel','teniente','brigadier',
+                          'ingeniero','almirante','capitan','don','dona','sargento']);
+  const ACC = { a:'[aáàâäAÁÀÂÄ]', e:'[eéèêëEÉÈÊË]', i:'[iíìîïIÍÌÎÏ]', o:'[oóòôöOÓÒÔÖ]',
+                u:'[uúùûüUÚÙÛÜ]', n:'[nñNÑ]' };
+
+  function norm(s) {
+    return (s || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+  }
+  function parseIntersection(raw) {
+    const cleaned = raw.replace(/^\s*(la\s+)?esquina\s+(de\s+)?/i, '');
+    const parts = cleaned.split(/\s+(?:y|e|con|esq(?:uina)?\.?)\s+|\s*[&\/]\s*/i)
+                         .map(s => s.trim()).filter(Boolean);
+    return parts.length === 2 ? parts : null;
+  }
+  function streetTokens(s, loose) {
+    let t = norm(s).replace(/[^a-z0-9\s]/g, ' ').split(/\s+/).filter(Boolean)
+              .map(w => ABBR[w] || w).filter(w => !GENERIC.has(w));
+    if (loose) {
+      const t2 = t.filter(w => !TITLES.has(w));
+      if (t2.length) t = t2;
+    }
+    return t;
+  }
+  function tokenPattern(w) {
+    if (/^\d+$/.test(w)) return `(^|[^0-9])${w}([^0-9]|$)`;
+    return w.split('').map(ch => ACC[ch] || ch).join('');
+  }
+  function buildQuery(ta, tb) {
+    const ra = ta.map(tokenPattern).join('.*');
+    const rb = tb.map(tokenPattern).join('.*');
+    return `[out:json][timeout:25];
+way["highway"]["name"~"${ra}",i](${BBOX})->.a;
+way["highway"]["name"~"${rb}",i](${BBOX})->.b;
+node(w.a)(w.b);
+out;`;
+  }
+  async function fetchOverpass(query) {
+    let lastErr;
+    for (const ep of OVERPASS) {
+      const ctrl = new AbortController();
+      const to = setTimeout(() => ctrl.abort(), 30000);
+      try {
+        const res = await fetch(ep, {
+          method: 'POST',
+          body: 'data=' + encodeURIComponent(query),
+          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+          signal: ctrl.signal
+        });
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        const j = await res.json();
+        return j.elements || [];
+      } catch (e) { lastErr = e; }
+      finally { clearTimeout(to); }
+    }
+    throw lastErr;
+  }
+  async function reverseLocality(lat, lon) {
+    try {
+      const res = await fetch('https://nominatim.openstreetmap.org/reverse?format=jsonv2&zoom=14' +
+        '&accept-language=es&lat=' + lat + '&lon=' + lon);
+      if (!res.ok) return '';
+      const a = (await res.json()).address || {};
+      const barrio = a.suburb || a.neighbourhood || a.village || '';
+      const loc = a.town || a.city || a.municipality || a.county || '';
+      return [...new Set([barrio, loc].filter(Boolean))].join(', ');
+    } catch (e) { return ''; }
+  }
+  const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+  async function searchIntersection(a, b, city) {
+    let nodes = [];
+    for (const loose of [false, true]) {
+      const ta = streetTokens(a, loose), tb = streetTokens(b, loose);
+      if (!ta.length || !tb.length) continue;
+      nodes = await fetchOverpass(buildQuery(ta, tb));
+      if (nodes.length) break;
+    }
+    if (!nodes.length) return [];
+
+    // Agrupar nodos cercanos (avenidas de doble mano generan varios nodos en el mismo cruce)
+    const clusters = [];
+    for (const n of nodes) {
+      if (typeof n.lat !== 'number') continue;
+      if (!clusters.some(c => haversine(c.lat, c.lon, n.lat, n.lon) < 80)) {
+        clusters.push({ lat: n.lat, lon: n.lon });
+      }
+    }
+    if (lastPos) {
+      const { latitude: la, longitude: lo } = lastPos.coords;
+      clusters.sort((x, y) => haversine(la, lo, x.lat, x.lon) - haversine(la, lo, y.lat, y.lon));
+    }
+    const out = [];
+    const top = clusters.slice(0, 5);
+    for (let i = 0; i < top.length; i++) {
+      const c = top[i];
+      const place = await reverseLocality(c.lat, c.lon);
+      out.push({ lat: c.lat, lon: c.lon, place,
+                 display_name: `Cruce de ${a} y ${b}${place ? ', ' + place : ''}` });
+      if (i < top.length - 1) await sleep(1100); // límite de uso de Nominatim
+    }
+    const cn = norm(city);
+    if (cn) out.sort((x, y) => (norm(y.place).includes(cn) ? 1 : 0) - (norm(x.place).includes(cn) ? 1 : 0));
+    return out;
+  }
+
+  function renderResults(data) {
+    el.results.innerHTML = '';
+    if (!data.length) {
+      speak('No encontré esa dirección. Probá con otro formato, por ejemplo calle y número, o pegá las coordenadas.');
+      return;
+    }
+    data.forEach((r, i) => {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.setAttribute('aria-pressed', 'false');
+      b.textContent = `Opción ${i + 1}: ${r.display_name}`;
+      b.addEventListener('click', () => {
+        el.results.querySelectorAll('button').forEach(x => x.setAttribute('aria-pressed', 'false'));
+        b.setAttribute('aria-pressed', 'true');
+        setDestination({ lat: parseFloat(r.lat), lon: parseFloat(r.lon), name: r.display_name });
+      });
+      el.results.appendChild(b);
+    });
+    // Se elige automáticamente la primera
+    el.results.querySelector('button').click();
+    if (data.length > 1) {
+      setTimeout(() => speak(`Destino fijado en la opción 1. Hay ${data.length - 1} opciones más debajo si no es la correcta.`, false), 100);
+    }
+  }
+
+  function setDestination(d) {
+    dest = d;
+    try { localStorage.setItem('dest', JSON.stringify(d)); } catch (e) {}
+    el.btnStart.disabled = false;
+    el.btnDistance.disabled = false;
+    resetAlarmState();
+    const short = d.name.split(',').slice(0, 2).join(',');
+    speak(`Destino fijado: ${short}.`);
+    updateDistanceDisplay();
+  }
+
+  // ---------- Seguimiento GPS ----------
+  async function startTracking() {
+    if (!dest) { speak('Primero fijá un destino.'); return; }
+    if (!('geolocation' in navigator)) { speak('Este navegador no permite acceder a la ubicación.'); return; }
+    ensureAudio();
+    resetAlarmState();
+    el.btnStart.disabled = true;
+    el.btnStop.disabled = false;
+    speak('Iniciando seguimiento. Esperá la primera ubicación.');
+
+    watchId = navigator.geolocation.watchPosition(onPosition, onGeoError, {
+      enableHighAccuracy: true, maximumAge: 2000, timeout: 20000
+    });
+    requestWakeLock();
+    startAutoAnnounce();
+  }
+
+  function stopTracking() {
+    if (watchId !== null) navigator.geolocation.clearWatch(watchId);
+    watchId = null;
+    stopAlarm();
+    clearInterval(autoTimer); autoTimer = null;
+    releaseWakeLock();
+    el.btnStart.disabled = !dest;
+    el.btnStop.disabled = true;
+    speak('Seguimiento detenido.');
+  }
+
+  function onPosition(pos) {
+    const first = !lastPos;
+    lastPos = pos;
+    const d = currentDistance();
+    updateDistanceDisplay();
+    if (first) speak(`Ubicación obtenida. Estás a ${distanceText(d)} del destino.${accuracyNote()}`);
+    checkAlarm(d);
+  }
+
+  function onGeoError(err) {
+    const msgs = {
+      1: 'No tengo permiso para usar tu ubicación. Habilitalo en los ajustes del navegador.',
+      2: 'No puedo determinar tu ubicación en este momento.',
+      3: 'La ubicación tardó demasiado en responder.'
+    };
+    speak(msgs[err.code] || 'Error de ubicación.');
+  }
+
+  function updateDistanceDisplay() {
+    const d = currentDistance();
+    el.distance.textContent = d === null ? '--' : distanceText(d);
+  }
+
+  // ---------- Alarma ----------
+  function threshold() {
+    const v = parseInt(el.threshold.value, 10);
+    return isNaN(v) ? 200 : Math.max(20, v);
+  }
+  function resetAlarmState() {
+    stopAlarm();
+    inAlarmZone = false;
+    alarmSilenced = false;
+    arrivedAnnounced = false;
+  }
+  function checkAlarm(d) {
+    const th = threshold();
+    if (d <= th && !inAlarmZone) {
+      inAlarmZone = true;
+      alarmSilenced = false;
+      startAlarm();
+    } else if (d > th + 60 && inAlarmZone) {
+      // Se alejó: rearmar
+      inAlarmZone = false;
+      stopAlarm();
+      arrivedAnnounced = false;
+    }
+    if (d <= 40 && !arrivedAnnounced) {
+      arrivedAnnounced = true;
+      vibrate([800, 200, 800, 200, 800]);
+      beep(4);
+      speak('Llegaste a la esquina. Bajá ahora.');
+    }
+  }
+  function alarmTick() {
+    if (alarmSilenced) return;
+    const d = currentDistance();
+    if (d === null) return;
+    vibrate([500, 200, 500, 200, 500]);
+    beep(3);
+    speak(`Atención. Estás a ${distanceText(d)} del destino. Prepará para bajar.`);
+  }
+  function startAlarm() {
+    el.btnSilence.disabled = false;
+    alarmTick();
+    clearInterval(alarmTimer);
+    alarmTimer = setInterval(alarmTick, 12000);
+  }
+  function stopAlarm() {
+    clearInterval(alarmTimer); alarmTimer = null;
+    el.btnSilence.disabled = true;
+    if (navigator.vibrate) navigator.vibrate(0);
+  }
+  function silenceAlarm() {
+    alarmSilenced = true;
+    stopAlarm();
+    speak('Alarma silenciada.');
+  }
+
+  // ---------- Avisos automáticos ----------
+  function startAutoAnnounce() {
+    clearInterval(autoTimer);
+    autoTimer = setInterval(() => {
+      if (!el.autoAnnounce.checked || alarmTimer) return;
+      const d = currentDistance();
+      if (d !== null) speak(`A ${distanceText(d)}.`);
+    }, 60000);
+  }
+
+  // ---------- Pantalla encendida ----------
+  async function requestWakeLock() {
+    try {
+      if ('wakeLock' in navigator) {
+        wakeLock = await navigator.wakeLock.request('screen');
+      }
+    } catch (e) { /* no disponible */ }
+  }
+  function releaseWakeLock() {
+    if (wakeLock) { wakeLock.release().catch(() => {}); wakeLock = null; }
+  }
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible' && watchId !== null) requestWakeLock();
+  });
+
+  // ---------- Botón de consulta ----------
+  function askDistance() {
+    ensureAudio();
+    if (!dest) { speak('Primero fijá un destino.'); return; }
+    if (!lastPos) {
+      speak('Todavía no tengo tu ubicación. Iniciá el seguimiento y esperá unos segundos.');
+      return;
+    }
+    const d = currentDistance();
+    speak(`Estás a ${distanceText(d)} del destino.${accuracyNote()}`);
+    vibrate(100);
+  }
+
+  // ---------- Eventos ----------
+  el.btnSearch.addEventListener('click', searchAddress);
+  el.address.addEventListener('keydown', e => { if (e.key === 'Enter') searchAddress(); });
+  el.btnStart.addEventListener('click', startTracking);
+  el.btnStop.addEventListener('click', stopTracking);
+  el.btnDistance.addEventListener('click', askDistance);
+  el.btnSilence.addEventListener('click', silenceAlarm);
+
+  // ---------- Restaurar destino anterior ----------
+  try {
+    const saved = JSON.parse(localStorage.getItem('dest') || 'null');
+    if (saved && typeof saved.lat === 'number') {
+      dest = saved;
+      el.btnStart.disabled = false;
+      el.btnDistance.disabled = false;
+      setStatus('Último destino guardado: ' + saved.name);
+    }
+  } catch (e) {}
+})();
+</script>
+</body>
+</html>

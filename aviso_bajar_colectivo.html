@@ -45,7 +45,7 @@
   <input type="text" id="city" value="" autocomplete="off" placeholder="Dejalo vacío para buscar en toda la zona">
   <button id="btnSearch">Buscar destino</button>
   <div id="results" role="group" aria-label="Resultados de la búsqueda"></div>
-  <p class="hint">También podés pegar coordenadas, por ejemplo: -34.6037, -58.4116</p>
+  <p class="hint">Para una esquina escribí las dos calles separadas por "y", por ejemplo: Sarmiento y Perón. Si hay varias localidades con ese cruce, usá el campo Localidad. También podés pegar coordenadas, por ejemplo: -34.6037, -58.4116</p>
 </section>
 
 <section aria-labelledby="h-track">
@@ -202,6 +202,16 @@
     speak('Buscando.');
     el.btnSearch.disabled = true;
     try {
+      const inter = parseIntersection(raw);
+      if (inter) {
+        try {
+          const found = await searchIntersection(inter[0], inter[1], city);
+          if (found.length) { renderResults(found); return; }
+          setStatus('No encontré ese cruce exacto. Pruebo con otra búsqueda.');
+        } catch (e) {
+          setStatus('La búsqueda de cruces no respondió. Pruebo con otra búsqueda.');
+        }
+      }
       const res = await fetch(url, { headers: { 'Accept': 'application/json' } });
       if (!res.ok) throw new Error('HTTP ' + res.status);
       const data = await res.json();
@@ -211,6 +221,120 @@
     } finally {
       el.btnSearch.disabled = false;
     }
+  }
+
+  // ---------- Búsqueda de cruces (Overpass / OpenStreetMap) ----------
+  const BBOX = '-34.75,-58.95,-34.40,-58.50'; // sur,oeste,norte,este (Gran Buenos Aires noroeste)
+  const OVERPASS = [
+    'https://overpass-api.de/api/interpreter',
+    'https://overpass.kumi.systems/api/interpreter'
+  ];
+  const ABBR = { gral:'general', pres:'presidente', dr:'doctor', dra:'doctora', cnel:'coronel',
+                 tte:'teniente', brig:'brigadier', ing:'ingeniero', alte:'almirante', cap:'capitan' };
+  const GENERIC = new Set(['av','avda','avenida','calle','pje','pasaje','bv','bulevar','de','del','la','las','los','el']);
+  const TITLES = new Set(['general','presidente','doctor','doctora','coronel','teniente','brigadier',
+                          'ingeniero','almirante','capitan','don','dona','sargento']);
+  const ACC = { a:'[aáàâäAÁÀÂÄ]', e:'[eéèêëEÉÈÊË]', i:'[iíìîïIÍÌÎÏ]', o:'[oóòôöOÓÒÔÖ]',
+                u:'[uúùûüUÚÙÛÜ]', n:'[nñNÑ]' };
+
+  function norm(s) {
+    return (s || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+  }
+  function parseIntersection(raw) {
+    const cleaned = raw.replace(/^\s*(la\s+)?esquina\s+(de\s+)?/i, '');
+    const parts = cleaned.split(/\s+(?:y|e|con|esq(?:uina)?\.?)\s+|\s*[&\/]\s*/i)
+                         .map(s => s.trim()).filter(Boolean);
+    return parts.length === 2 ? parts : null;
+  }
+  function streetTokens(s, loose) {
+    let t = norm(s).replace(/[^a-z0-9\s]/g, ' ').split(/\s+/).filter(Boolean)
+              .map(w => ABBR[w] || w).filter(w => !GENERIC.has(w));
+    if (loose) {
+      const t2 = t.filter(w => !TITLES.has(w));
+      if (t2.length) t = t2;
+    }
+    return t;
+  }
+  function tokenPattern(w) {
+    if (/^\d+$/.test(w)) return `(^|[^0-9])${w}([^0-9]|$)`;
+    return w.split('').map(ch => ACC[ch] || ch).join('');
+  }
+  function buildQuery(ta, tb) {
+    const ra = ta.map(tokenPattern).join('.*');
+    const rb = tb.map(tokenPattern).join('.*');
+    return `[out:json][timeout:25];
+way["highway"]["name"~"${ra}",i](${BBOX})->.a;
+way["highway"]["name"~"${rb}",i](${BBOX})->.b;
+node(w.a)(w.b);
+out;`;
+  }
+  async function fetchOverpass(query) {
+    let lastErr;
+    for (const ep of OVERPASS) {
+      const ctrl = new AbortController();
+      const to = setTimeout(() => ctrl.abort(), 30000);
+      try {
+        const res = await fetch(ep, {
+          method: 'POST',
+          body: 'data=' + encodeURIComponent(query),
+          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+          signal: ctrl.signal
+        });
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        const j = await res.json();
+        return j.elements || [];
+      } catch (e) { lastErr = e; }
+      finally { clearTimeout(to); }
+    }
+    throw lastErr;
+  }
+  async function reverseLocality(lat, lon) {
+    try {
+      const res = await fetch('https://nominatim.openstreetmap.org/reverse?format=jsonv2&zoom=14' +
+        '&accept-language=es&lat=' + lat + '&lon=' + lon);
+      if (!res.ok) return '';
+      const a = (await res.json()).address || {};
+      const barrio = a.suburb || a.neighbourhood || a.village || '';
+      const loc = a.town || a.city || a.municipality || a.county || '';
+      return [...new Set([barrio, loc].filter(Boolean))].join(', ');
+    } catch (e) { return ''; }
+  }
+  const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+  async function searchIntersection(a, b, city) {
+    let nodes = [];
+    for (const loose of [false, true]) {
+      const ta = streetTokens(a, loose), tb = streetTokens(b, loose);
+      if (!ta.length || !tb.length) continue;
+      nodes = await fetchOverpass(buildQuery(ta, tb));
+      if (nodes.length) break;
+    }
+    if (!nodes.length) return [];
+
+    // Agrupar nodos cercanos (avenidas de doble mano generan varios nodos en el mismo cruce)
+    const clusters = [];
+    for (const n of nodes) {
+      if (typeof n.lat !== 'number') continue;
+      if (!clusters.some(c => haversine(c.lat, c.lon, n.lat, n.lon) < 80)) {
+        clusters.push({ lat: n.lat, lon: n.lon });
+      }
+    }
+    if (lastPos) {
+      const { latitude: la, longitude: lo } = lastPos.coords;
+      clusters.sort((x, y) => haversine(la, lo, x.lat, x.lon) - haversine(la, lo, y.lat, y.lon));
+    }
+    const out = [];
+    const top = clusters.slice(0, 5);
+    for (let i = 0; i < top.length; i++) {
+      const c = top[i];
+      const place = await reverseLocality(c.lat, c.lon);
+      out.push({ lat: c.lat, lon: c.lon, place,
+                 display_name: `Cruce de ${a} y ${b}${place ? ', ' + place : ''}` });
+      if (i < top.length - 1) await sleep(1100); // límite de uso de Nominatim
+    }
+    const cn = norm(city);
+    if (cn) out.sort((x, y) => (norm(y.place).includes(cn) ? 1 : 0) - (norm(x.place).includes(cn) ? 1 : 0));
+    return out;
   }
 
   function renderResults(data) {
